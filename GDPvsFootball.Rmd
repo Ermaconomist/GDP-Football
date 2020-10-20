@@ -1,0 +1,362 @@
+---
+title: "How does the GDP correlate with football stocks"
+output:
+  html_notebook: default
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Time Series Analysis in Finance, HS19 HSLU
+#### Nicolai Wenger | Nico Wyss
+
+1. File description comment, including purpose of program, inputs, and outputs
+2. Start options (hidden)
+3. Data import
+4. Mutation to dataset 
+4.1 Testing stationarity  
+5. Correlation
+6. Forecasting
+
+
+#### 1. File description comment, including purpose of program, inputs, and outputs
+This file was created as an assignment during the Time Series Analysis in Finance course. In order to use the file optimally, the start options must be loaded. The R script was written on a Mac Catalina 10.15.1, R version 3.6.1 (2019-07-05).
+
+The script aims to find a correlation between the quarterly return on gdp and that of listed football clubs and their shares. Football clubs differ in their national and international importance. 
+
+##### a) Hypothesis 1
+* H1: There is a correlation between the return of football club shares and the respective country.
+* H0: There is no correlation between the return of football club shares and the country. 
+
+##### b) Hypothesis 2
+* H1: Equity returns of more successful international football clubs correlate negatively with GDP.
+* H0: Returns on shares of internationally more successful football clubs correlate positively with GDP.
+
+The input data were taken from FRED (Federal Reserve Bank of St. Louis) using the Tidyquant package.
+#### 2. Start options
+```{r include=TRUE}
+rm(list = ls(all.names = TRUE))
+#install.packages(pacman)
+library(pacman)
+p_load(tidyquant, tidyverse, tseries, xts, zoo, forecast, lmtest, xts, vars)
+options(scipen = 100)
+options(digits = 6)
+tq_transmute_fun_options()$xts
+```
+#### 3. Data Import
+The data was imported via FRED and Yahoofinance using the tidyquant package.  
+We have pulled the quarterly share data and the quarterly GDP data and put each into its own data frame.  
+Since we didn't want to check every first issue, we decided to start around 1980. As we will see later, most shares were issued much later.  
+The GDP data are to be trimmed in a next step on the respective time series of the shares. 
+
+
+```{r}
+df_ajax <- tq_get("AJAX.AS",
+                     get = "stock.prices",
+                     from = "1980-01-01")
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=TRUE}
+vec_clubs <- c("AJAX.AS", "BVB.MU", "JUVE.MI", "PARKEN.CO", "OLG.PA", "MANU", "FCP.LS") 
+# Backup Vereine "SSL.MI"(LAZIO) ,"FENER.IS" (TR),"GSRAY.IS"(TR),"SCP.LS"(PORTO "Türkei GDP")
+vec_gdp   <- c("CPMNACSCAB1GQDE", "CPMNACSCAB1GQIT", "CPMNACSCAB1GQFR", "CPMNACSCAB1GQNL", "CPMNACSCAB1GQPT", "UKNGDP", "CLVMNACSCAB1GQDK")
+
+#Get stocks data
+df_vereine <- tq_get(vec_clubs,
+                     get = "stock.prices",
+                     from = "1980-01-01") %>%
+  rename(verein = symbol) %>%
+  group_by(verein) %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = to.period,
+               period = "quarters") %>%
+  mutate(date = (date + 10) %>% format("%Y-%m") %>% as.character) %>% 
+  ungroup() %>%
+  mutate(land = case_when(verein == "BVB.MU" ~ "Germany",
+                          verein == "JUVE.MI" ~ "Italy",
+                          verein == "OLG.PA" ~ "France",
+                          verein == "AJAX.AS" ~ "Netherlands",
+                          verein == "FCP.LS" ~ "Portugal",
+                          verein == "MANU" ~ "United Kingdom",
+                          verein == "PARKEN.CO" ~ "Denmark")) %>% 
+  drop_na()
+```
+
+```{r include=TRUE}
+#Get GDP data
+df_gdp <- tq_get(vec_gdp,
+                 get = "economic.data",
+                 from = "1980-01-01") %>% drop_na() %>% 
+  mutate(date = date %>% format("%Y-%m") %>% as.character) %>% 
+  mutate(land = case_when(symbol == "CPMNACSCAB1GQDE" ~ "Germany",
+                          symbol == "CPMNACSCAB1GQIT" ~ "Italy",
+                          symbol == "CPMNACSCAB1GQFR" ~ "France",
+                          symbol == "CPMNACSCAB1GQNL" ~ "Netherlands",
+                          symbol == "CPMNACSCAB1GQPT" ~ "Portugal",
+                          symbol == "UKNGDP" ~ "United Kingdom",
+                          symbol == "CLVMNACSCAB1GQDK" ~ "Denmark")
+
+ ```
+
+
+#### 4. Data mutation
+In the first dataset (germany) we wanted to see if the data is already stationary and can be used further.  
+Even after the logarithms the H0 hypothesis of the Dickey Fuller test cannot be rejected.  
+The data is not stationary yet. So we had to form the differences and test the stationarity again.  
+Since the same method has to be used for all data, we decided not to create single data frames but to combine all countries into one.
+```{r echo=TRUE, warning=FALSE}
+df_germany_verein <- df_vereine %>% filter(verein == "BVB.MU") %>% drop_na()
+df_germany_gdp    <- df_gdp %>% filter(land  == "Germany") %>% drop_na()
+df_germany <- df_germany_gdp %>% left_join(df_germany_verein, by = "date")
+rm(df_germany_verein, df_germany_gdp)
+
+df_germany <- df_germany %>% mutate(diff_gdp_log = log(price), diff_adjusted_log = log(adjusted)) %>% drop_na()
+
+df_germany %>% summarise(pvalue_gdp = adf.test(price)$p.value) #ADF Test on GDP Data = 0.573096)
+df_germany %>% summarise(pvalue_stock = adf.test(adjusted)$p.value) #ADF Test on Stock Data = 0.860837
+
+df_germany %>% summarise(pvalue_gdplog = adf.test(diff_gdp_log)$p.value) #ADF Test on GDP(log) Data = 0.208945
+df_germany %>% summarise(pvalue_stocklog = adf.test(diff_adjusted_log)$p.value) #ADF Test on Stock(log) Data = 0.63795	
+
+df_germany <- df_germany %>% drop_na() %>% mutate(diff_gdp = price - lag(price), 
+                                                  diff_adjusted = adjusted - lag(adjusted)) %>% drop_na()
+
+df_germany %>% summarise(pvalue_gdplag1 = adf.test(diff_gdp)$p.value) #ADF Test on GDP(lag1) Data = < 0.01 p-value smaller than printed p-value
+df_germany %>% summarise(pvalue_stocklag1 = adf.test(diff_adjusted)$p.value) #ADF Test on Stock(lag1) Data = < 0.01 p-value smaller than printed p-value
+#According to the ADF-test, log returns of the SPI are stationary and can thus be modelled using AR-, MA- or ARIMA-models.
+
+```
+We have decided to narrow down the code and combine the individual dataframes into one dataset and set lag1  
+```{r include=TRUE}
+df_dataset <- df_gdp %>% 
+  left_join(df_vereine) %>%
+  drop_na() %>% 
+  group_by(land) %>% 
+  mutate(diff_gdp = price - lag(price),
+         diff_adjusted = adjusted - lag(adjusted)) %>%
+  mutate(diff_log_gdp = log(price) - lag(log(price)),
+         diff_log_adjusted = log(adjusted) - lag(log(adjusted))) %>%
+  drop_na() %>% 
+    ungroup()
+
+rm(df_gdp, df_vereine)
+```
+#### 4.1 Testing stationarity 
+ ## Bescheibung
+```{r echo=TRUE}
+df_dataset %>% 
+  group_by(land) %>% 
+  summarise(pvalue_gdp = adf.test(price)$p.value,
+            pvalue_gdp_lag = adf.test(diff_gdp)$p.value,
+            pvalue_gdp_LOG = adf.test(diff_log_gdp)$p.value,
+            pvalue_stock = adf.test(adjusted)$p.value,
+            pvalue_stock_lag = adf.test(diff_adjusted)$p.value,
+            pvalue_stock_LOG = adf.test(diff_log_adjusted)$p.value)
+```
+no lag
+```{r echo=TRUE}
+df_dataset%>%  ggplot() + geom_line(aes(x = date, y = price, group = land, color = land)) + facet_grid(land ~. , scales = "free", space = "free")
+```
+1 lag
+```{r echo=TRUE}
+df_dataset%>%  ggplot() + geom_line(aes(x = date, y = diff_gdp, group = land, color = land)) + facet_grid(land ~. , scales = "free", space = "free")
+```
+diff log
+```{r}
+df_dataset%>%  ggplot() + geom_line(aes(x = date, y = diff_log_gdp, group = land, color = land)) + facet_grid(land ~. , scales = "free", space = "free")
+```
+
+#### 5. Correlation
+```{r}
+df_dataset %>% 
+  group_by(land) %>% 
+  summarise(corr_gdp_stock = cor.test(price, adjusted)$estimate,
+            corr_gdp_stock_lag = cor.test(diff_gdp, diff_adjusted)$estimate,
+            corr_gdp_stock_loglag = cor.test(diff_log_gdp, diff_log_adjusted)$estimate)
+```
+#### 6. Forecasting
+```{r}
+dx_fit   <- df_dataset %>% filter(land == "Portugal") %>% 
+  #filter(between(date, var_startdate, var_cutdate)) %>% 
+  pull(adjusted) %>% 
+  auto.arima()
+dx_fcast <- dx_fit %>% forecast(h = 4)
+dx_fcast %>% autoplot()
+```
+
+```{r}
+dx_fit   <- df_dataset %>% filter(land == "Portugal") %>% 
+  #filter(between(date, var_startdate, var_cutdate)) %>% 
+  pull(price) %>% 
+  auto.arima()
+dx_fcast <- dx_fit %>% forecast(h = 4)
+dx_fcast %>% autoplot() 
+```
+
+```{r echo=TRUE}
+df_sp_germany <- df_dataset %>% filter(land == "Germany") %>% dplyr:::select(diff_log_adjusted, diff_log_gdp)
+
+df_sp_germany %>% ggplot(aes(x = diff_log_gdp, y = diff_log_adjusted)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+df_sp_france <- df_dataset %>% filter(land == "France") %>% dplyr:::select(diff_log_adjusted, diff_log_gdp)
+df_sp_france %>% ggplot(aes(x = diff_log_gdp, y = diff_log_adjusted)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+
+df_sp_italy <- df_dataset %>% filter(land == "Italy") %>% dplyr:::select(diff_log_adjusted, diff_log_gdp)
+df_sp_italy %>% ggplot(aes(x = diff_log_gdp, y = diff_log_adjusted)) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+```
+#### 7. Additional Information
+We tested wether the official seasonal adjsuted data looks alike our own seasonally adjusted time series. It did and therefore we just collected the official quarterly and seasonally adjusted data from FRED.
+
+```{r echo=TRUE}
+# ARIMA
+#no actual usage, just to compare auto and self made
+# Germany / Dortmund Data Prediction 
+df_ger_gdp <- tq_get("CPMNACSCAB1GQDE",
+                 get = "economic.data",
+                 from = "2000-12-29") %>% drop_na()
+#stock
+df_ger_stx <- tq_get("BVB.MU",
+                     get = "stock.prices",
+                     from = "1980-01-01") %>%
+  tq_transmute(select = adjusted,
+               mutate_fun = to.period,
+               period = "quarters")
+
+ts_ger_gdp<-ts(df_ger_gdp[,-1], start=c(2000,1), frequency = 4)
+ts_ger_stx<-ts(df_ger_stx[,-1], start=c(2000,1), frequency = 4)
+
+adf.test(ts_ger_stx) #(0.826)
+plot(ts_ger_stx)
+adf.test(ts_ger_gdp)
+plot(ts_ger_gdp) #(0.573)
+
+ts_ger_stx_returns <- diff(log(ts_ger_stx)) #Building returns
+adf.test(ts_ger_stx_returns) #(0.029)
+plot(ts_ger_stx_returns)
+ts_ger_gdp_returns <- diff(log(ts_ger_gdp))
+adf.test(ts_ger_gdp_returns) #(0.01)
+plot(ts_ger_gdp_returns)
+
+acf(ts_ger_stx_returns, main="Stock Returns")
+acf(ts_ger_gdp_returns, main="GDP Returns")
+
+# Preparing for the ARIMA Model for GDP TS
+max.order <- 2
+d <- 1 
+arima_ger_gdp_aic <- matrix(NA, ncol=max.order+1, nrow=max.order+1)
+row.names(arima_ger_gdp_aic)<-c(0:max.order)
+colnames(arima_ger_gdp_aic)<-c(0:max.order)
+
+for(i in 0:max.order){
+  for(j in 0:max.order){
+    arima_ger_gdp_aic[i+1,j+1]<-AIC(Arima(ts_ger_gdp, order=c(i,d,j), include.drift = TRUE))
+  }
+}
+arima_ger_gdp_aic
+
+index<-which(arima_ger_gdp_aic == min(arima_ger_gdp_aic), arr.ind = TRUE)
+ar<-as.numeric(rownames(arima_ger_gdp_aic)[index[1]])
+ma<-as.numeric(colnames(arima_ger_gdp_aic)[index[2]])
+
+arima_ger_gdp<-Arima(ts_ger_gdp, order=c(ar,1,ma), include.drift = TRUE)
+arima_ger_gdp
+
+coeftest(arima_ger_gdp)
+
+ts_ger_gdp_pred <- forecast(arima_ger_gdp,level=0.95,h=8)
+plot(ts_ger_gdp_pred, ylab="GDP Germany")
+```
+
+
+```{r}
+# Preparing for the ARIMA Model for Stock TS
+arima_ger_stx_aic <- matrix(NA, ncol=max.order+1, nrow=max.order+1)
+row.names(arima_ger_stx_aic)<-c(0:max.order)
+colnames(arima_ger_stx_aic)<-c(0:max.order)
+
+for(i in 0:max.order){
+  for(j in 0:max.order){
+    arima_ger_stx_aic[i+1,j+1]<-AIC(Arima(ts_ger_stx, order=c(i,d,j), include.drift = TRUE))
+  }
+}
+arima_ger_stx_aic
+
+index<-which(arima_ger_stx_aic == min(arima_ger_stx_aic), arr.ind = TRUE)
+ar<-as.numeric(rownames(arima_ger_stx_aic)[index[1]])
+ma<-as.numeric(colnames(arima_ger_stx_aic)[index[2]])
+
+arima_ger_stx<-Arima(ts_ger_stx, order=c(ar,1,ma), include.drift = TRUE)
+arima_ger_stx
+
+coeftest(arima_ger_stx)
+
+ts_ger_stx_pred <- forecast(arima_ger_stx,level=0.95,h=8)
+plot(ts_ger_stx_pred, ylab="Stock Dortmund")
+```
+
+
+```{r}
+#Auto Arima
+auto.arima(ts_ger_gdp, ic="aic", allowdrift = TRUE, seasonal = TRUE)
+auto.arima(ts_ger_stx, ic="aic", allowdrift = TRUE, seasonal = TRUE)
+```
+
+
+```{r}
+#setNames(df_ger_gdp_notadj, rep(" ", length(df_ger_gdp_notadj)))
+#names(df_ger_gdp_notadj) <- NULL
+
+df_ger_gdp_notadj <- tq_get("CPMNACNSAB1GQDE",
+                 get = "economic.data",
+                 from = "1980-01-01") %>% drop_na()
+
+df_ger_gdp_adj <- tq_get("CPMNACSCAB1GQDE",
+                 get = "economic.data",
+                 from = "1980-01-01") %>% 
+  drop_na()
+
+
+df_ger_gdp_notadj %>%  drop_na()
+df_ger_gdp_notadj %>%  ggplot() + geom_line(aes(x = date, y = price))
+
+
+ts_ger_gdp_notadj <- ts(df_ger_gdp_notadj$price, start = 1991, frequency = 4)
+plot(ts_ger_gdp_notadj)
+
+ts_ger_gdp_notadj_dec <- decompose(ts_ger_gdp_notadj)
+plot(ts_ger_gdp_notadj_dec, xlab="Year")
+
+# Saisonalität berechnen und aus TS entfernen
+ts_ger_gdp_seasonality <- ts_ger_gdp_notadj_dec$seasonal
+
+# Vergleich bereinigt vs. offizielle Daten
+par(mfrow =c(2,1))
+plot(ts_ger_gdp_notadj-ts_ger_gdp_seasonality, main="Seasonally adjusted GDP by user", ylab="In EUR bn", xlab="Year")
+plot(df_ger_gdp_adj, main="Seasonally adjusted GDP by Government", ylab="In EUR bn", xlab="Year", type="l")
+
+ds_ger_gdp_notadji <- ts_ger_gdp_notadj-ts_ger_gdp_seasonality
+ds_ger_gdp_notadji <- tbl_df(ds_ger_gdp_notadji)
+
+ggplot() +
+  geom_line(aes(y = df_ger_gdp_adj$price, x = df_ger_gdp_adj$date, color = "adjusted")) +
+  geom_line(aes(y = ds_ger_gdp_notadji$x, x = df_ger_gdp_adj$date, color = "manually adjusted")) +
+  scale_shape_discrete()
+  
+# We have seen that the result of our purge and that official is very close. We take for this reason
+# In the future the GDP adjusted for seasonality 
+
+```
+
+
