@@ -98,9 +98,9 @@ df_gdp <- tq_get(vec_gdp,
                           symbol == "CPMNACSCAB1GQNL" ~ "Netherlands",
                           symbol == "CPMNACSCAB1GQPT" ~ "Portugal",
                           symbol == "UKNGDP" ~ "United Kingdom",
-                          symbol == "CLVMNACSCAB1GQDK" ~ "Denmark")
+                          symbol == "CLVMNACSCAB1GQDK" ~ "Denmark"))
 
- ```
+```
 
 
 #### 4. Data mutation
